@@ -921,6 +921,111 @@ class SenseVoiceSmall(nn.Module):
                 results.append(result_i)
         return results, meta_data
 
+    def inference_emo(
+            self,
+            data_in,
+            data_lengths=None,
+            key: list = ["wav_file_tmp_name"],
+            tokenizer=None,
+            frontend=None,
+            **kwargs,
+    ):
+
+        meta_data = {}
+        if (
+                isinstance(data_in, torch.Tensor) and kwargs.get("data_type", "sound") == "fbank"
+        ):  # fbank
+            speech, speech_lengths = data_in, data_lengths
+            if len(speech.shape) < 3:
+                speech = speech[None, :, :]
+            if speech_lengths is None:
+                speech_lengths = speech.shape[1]
+        else:
+            # extract fbank feats
+            time1 = time.perf_counter()
+            audio_sample_list = load_audio_text_image_video(
+                data_in,
+                fs=frontend.fs,
+                audio_fs=kwargs.get("fs", 16000),
+                data_type=kwargs.get("data_type", "sound"),
+                tokenizer=tokenizer,
+            )
+            time2 = time.perf_counter()
+            meta_data["load_data"] = f"{time2 - time1:0.3f}"
+            speech, speech_lengths = extract_fbank(
+                audio_sample_list, data_type=kwargs.get("data_type", "sound"), frontend=frontend
+            )
+            time3 = time.perf_counter()
+            meta_data["extract_feat"] = f"{time3 - time2:0.3f}"
+            meta_data["batch_data_time"] = (
+                    speech_lengths.sum().item() * frontend.frame_shift * frontend.lfr_n / 1000
+            )
+
+        speech = speech.to(device=kwargs["device"])
+        speech_lengths = speech_lengths.to(device=kwargs["device"])
+
+        language = kwargs.get("language", "auto")
+        language_query = self.embed(
+            torch.LongTensor(
+                [[self.lid_dict[language] if language in self.lid_dict else 0]]
+            ).to(speech.device)
+        ).repeat(speech.size(0), 1, 1)
+
+        use_itn = kwargs.get("use_itn", False)
+        output_timestamp = kwargs.get("output_timestamp", False)
+
+        textnorm = kwargs.get("text_norm", None)
+        if textnorm is None:
+            textnorm = "withitn" if use_itn else "woitn"
+        textnorm_query = self.embed(
+            torch.LongTensor([[self.textnorm_dict[textnorm]]]).to(speech.device)
+        ).repeat(speech.size(0), 1, 1)
+        speech = torch.cat((textnorm_query, speech), dim=1)
+        speech_lengths += 1
+
+        event_emo_query = self.embed(torch.LongTensor([[1, 2]]).to(speech.device)).repeat(
+            speech.size(0), 1, 1
+        )
+        input_query = torch.cat((language_query, event_emo_query), dim=1)
+        speech = torch.cat((input_query, speech), dim=1)
+        speech_lengths += 3
+
+        # Encoder
+        encoder_out, encoder_out_lens = self.encoder(speech, speech_lengths)
+        if isinstance(encoder_out, tuple):
+            encoder_out = encoder_out[0]
+
+        # c. Passed the encoder result and the beam search
+        ctc_logits = self.ctc.log_softmax(encoder_out)
+        if kwargs.get("ban_emo_unk", False):
+            ctc_logits[:, :, self.emo_dict["unk"]] = -float("inf")
+
+        results = []
+        b, n, d = encoder_out.size()
+        if isinstance(key[0], (list, tuple)):
+            key = key[0]
+        if len(key) < b:
+            key = key * b
+        for i in range(b):
+            x = ctc_logits[i, : encoder_out_lens[i].item(), :]
+            yseq = x.argmax(dim=-1)
+            yseq = torch.unique_consecutive(yseq, dim=-1)
+
+            ibest_writer = None
+            if kwargs.get("output_dir") is not None:
+                if not hasattr(self, "writer"):
+                    self.writer = DatadirWriter(kwargs.get("output_dir"))
+                ibest_writer = self.writer[f"1best_recog"]
+
+            mask = yseq != self.blank_id
+            token_int = yseq[mask].tolist()
+
+            # Change integer-ids to tokens
+
+            text = tokenizer.decode(token_int[1])
+        return text
+
+
     def export(self, **kwargs):
         from export_meta import export_rebuild_model
 

@@ -4,34 +4,36 @@
 #  MIT License  (https://opensource.org/licenses/MIT)
 
 from model import SenseVoiceSmall
-from funasr.utils.postprocess_utils import rich_transcription_postprocess
+import time
+#from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
 
 model_dir = "iic/SenseVoiceSmall"
-m, kwargs = SenseVoiceSmall.from_pretrained(model=model_dir, device="cuda:0")
+m, kwargs = SenseVoiceSmall.from_pretrained(model=model_dir, device="cpu")
 m.eval()
 
+# all results
+time1 = time.perf_counter()
 res = m.inference(
-    data_in=f"{kwargs['model_path']}/example/en.mp3",
+    data_in=f"/Users/sunxuguang/SenseVoice/通话记录-598320-user-转人工.wav",
     language="auto", # "zh", "en", "yue", "ja", "ko", "nospeech"
     use_itn=False,
     ban_emo_unk=False,
     **kwargs,
 )
+time2 = time.perf_counter()
+print(res)
+print(f"cost time: {time2 - time1:0.3f}")
 
-text = rich_transcription_postprocess(res[0][0]["text"])
-print(text)
-
-res = m.inference(
-    data_in=f"{kwargs['model_path']}/example/en.mp3",
+#only emo results
+time1 = time.perf_counter()
+emo = m.inference_emo(
+    data_in=f"/Users/sunxuguang/SenseVoice/通话记录-598320-user-转人工.wav",
     language="auto", # "zh", "en", "yue", "ja", "ko", "nospeech"
     use_itn=False,
     ban_emo_unk=False,
-    output_timestamp=True,
     **kwargs,
 )
-
-timestamp = res[0][0]["timestamp"]
-text = rich_transcription_postprocess(res[0][0]["text"])
-print(text)
-print(timestamp)
+time2 = time.perf_counter()
+print(emo)
+print(f"cost time: {time2 - time1:0.3f}")
